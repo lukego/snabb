@@ -48,9 +48,12 @@ function RawSocket:new (ifname)
                        {__index = RawSocket})
 end
 
+-- Limit the maximum polling rate (requires expensive system call.)
+local poll_throttle = lib.throttle(0.001)
+
 function RawSocket:pull ()
    local l = self.output.tx
-   if l == nil then return end
+   if (l == nil) or (not poll_throttle()) then return end
    local limit = engine.pull_npackets
    while limit > 0 and self:can_receive() do
       limit = limit - 1
