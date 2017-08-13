@@ -111,7 +111,7 @@ XCFLAGS=
 #XCFLAGS+= -DLUAJIT_NUMMODE=2
 #
 # Enable GC64 mode for x64.
-#XCFLAGS+= -DLUAJIT_ENABLE_GC64
+XCFLAGS+= -DLUAJIT_ENABLE_GC64
 #
 ##############################################################################
 
