@@ -2,6 +2,8 @@
 
 module(...,package.seeall)
 
+require("jit.opt").start("-loop", "-sink")
+
 -- Default to not using any Lua code on the filesystem.
 -- (Can be overridden with -P argument: see below.)
 package.path = ''
