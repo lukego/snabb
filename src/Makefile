@@ -187,7 +187,7 @@ $(EVTOBJ): obj/%_events.o: %.events Makefile | $(OBJDIR)
 	@(echo -n "return [=============["; \
 	 cat $<; \
 	 echo "]=============]") > $(basename $@).luainc
-	$(Q) luajit -bg -n $(subst /,.,$*)_events $(basename $@).luainc $@
+	$(Q) raptorjit -bg -n $(subst /,.,$*)_events $(basename $@).luainc $@
 
 # Create list of programs that exist
 programs.inc: program
