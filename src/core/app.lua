@@ -48,6 +48,9 @@ freebits  = counter.create("engine/freebits.counter")  -- Total packet bits free
 freebytes = counter.create("engine/freebytes.counter") -- Total packet bytes freed
 configs   = counter.create("engine/configs.counter")   -- Total configurations loaded
 
+-- Auditlog state
+local auditlog_enabled = false
+
 -- Timeline event log
 local timeline_log, events -- initialized on demand
 
@@ -490,6 +493,11 @@ function main (options)
    if options.duration then
       assert(not done, "You can not have both 'duration' and 'done'")
       done = lib.timeout(options.duration)
+   end
+
+   -- Enable auditlog
+   if not auditlog_enabled then
+      jit.auditlog(shm.path("audit.log"))
    end
 
    -- Setup vmprofile
