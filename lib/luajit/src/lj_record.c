@@ -577,7 +577,14 @@ static void rec_loop_jit(jit_State *J, TraceNo lnk, LoopEvent ev)
     if (J->pc == J->startpc && J->framedepth + J->retdepth == 0)
       lj_record_stop(J, LJ_TRLINK_LOOP, J->cur.traceno);  /* Form extra loop. */
     else
-      lj_record_stop(J, LJ_TRLINK_ROOT, lnk);  /* Link to the loop. */
+      if (J->pc == J->startpc && J->framedepth + J->retdepth == 0 &&
+          traceref(J, lnk)->linktype != LJ_TRLINK_LOOP) {
+        /* Loop is possible: flush non-looping root trace. */
+        lj_trace_flush(J, lnk);
+        lj_trace_err(J, LJ_TRERR_LINNER);
+      } else {
+        lj_record_stop(J, LJ_TRLINK_ROOT, lnk);  /* Link to the loop. */
+      }
   }  /* Side trace continues across a loop that's left or not entered. */
 }
 
