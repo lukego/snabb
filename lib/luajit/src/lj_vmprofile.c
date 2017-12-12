@@ -6,17 +6,21 @@
 #define lj_vmprofile_c
 #define LUA_CORE
 
-#ifdef LUAJIT_VMPROFILE
-
 #define _GNU_SOURCE 1
 #include <stdio.h>
 #include <assert.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <signal.h>
 #include <ucontext.h>
 #undef _GNU_SOURCE
 
+#include "lj_err.h"
 #include "lj_obj.h"
 #include "lj_dispatch.h"
 #include "lj_jit.h"
@@ -42,7 +46,7 @@ int vmprofile_get_profile_size() {
 void vmprofile_set_profile(void *counters) {
   profile = (VMProfile*)counters;
   profile->magic = 0x1d50f007;
-  profile->major = 2;
+  profile->major = 4;
   profile->minor = 0;
 }
 
@@ -52,28 +56,43 @@ void vmprofile_set_profile(void *counters) {
 static void vmprofile_signal(int sig, siginfo_t *si, void *data)
 {
   if (profile != NULL) {
+    int vmstate, trace;     /* sample matrix indices */
     lua_State *L = gco2th(gcref(state.g->cur_L));
-    int vmstate = state.g->vmstate;
-    int trace = ~vmstate == LJ_VMST_GC ? state.g->gcvmstate : vmstate;
-    /* Not in a trace */
-    if (trace < 0) {
-      profile->vm[~vmstate]++;
-    } else {
-      int bucket = trace > LJ_VMPROFILE_TRACE_MAX ? 0 : trace;
-      VMProfileTraceCount *count = &profile->trace[bucket];
-      GCtrace *T = traceref(L2J(L), (TraceNo)trace);
+    /*
+     * The basic job of this function is to select the right indices
+     * into the profile counter matrix. That requires deciding which
+     * logical state the VM is in and which trace the sample should be
+     * attributed to. Heuristics are needed to pick appropriate values.
+     */
+    if (state.g->vmstate > 0) {    /* Running JIT mcode. */
+      GCtrace *T = traceref(L2J(L), (TraceNo)state.g->vmstate);
       intptr_t ip = (intptr_t)((ucontext_t*)data)->uc_mcontext.gregs[REG_RIP];
       ptrdiff_t mcposition = ip - (intptr_t)T->mcode;
-      if (~vmstate == LJ_VMST_GC) {
-        count->gc++;
-      } else if ((mcposition < 0) || (mcposition >= T->szmcode)) {
-        count->other++;
+      if ((mcposition < 0) || (mcposition >= T->szmcode)) {
+        vmstate = LJ_VMST_FFI;    /* IP is outside the trace mcode. */
       } else if ((T->mcloop != 0) && (mcposition >= T->mcloop)) {
-        count->loop++;
+        vmstate = LJ_VMST_LOOP;   /* IP is inside the mcode loop. */
       } else {
-        count->head++;
+        vmstate = LJ_VMST_HEAD;   /* IP is inside mcode but not loop. */
+      }
+      trace = state.g->vmstate;
+    } else {                    /* Running VM code (not JIT mcode.) */
+      if (~state.g->vmstate == LJ_VMST_GC && state.g->gcvmstate > 0) {
+        /* Special case: GC invoked from JIT mcode. */
+        vmstate = LJ_VMST_JGC;
+        trace = state.g->gcvmstate;
+      } else {
+        /* General case: count towards most recently exited trace. */
+        vmstate = ~state.g->vmstate;
+        trace = state.g->lasttrace;
       }
     }
+    /* Handle overflow from individual trace counters. */
+    trace = trace <= LJ_VMPROFILE_TRACE_MAX ? trace : 0;
+    /* Phew! We have calculated the indices and now we can bump the counter. */
+    lua_assert(vmstate >= 0 && vmstate <= LJ_VMST__MAX);
+    lua_assert(trace >= 0 && trace <= LJ_VMPROFILE_TRACE_MAX);
+    profile->count[trace][vmstate]++;
   }
 }
 
@@ -101,16 +120,49 @@ static void stop_timer()
 
 /* -- Lua API ------------------------------------------------------------- */
 
-LUA_API void luaJIT_vmprofile_start(lua_State *L)
+LUA_API int luaJIT_vmprofile_open(lua_State *L, const char *str)
+{
+  int fd;
+  void *ptr;
+  if (((fd = open(str, O_RDWR|O_CREAT, 0666)) != -1) &&
+      ((ftruncate(fd, sizeof(VMProfile))) != -1) &&
+      ((ptr = mmap(NULL, sizeof(VMProfile), PROT_READ|PROT_WRITE,
+                   MAP_SHARED, fd, 0)) != MAP_FAILED)) {
+    memset(ptr, 0, sizeof(VMProfile));
+    setlightudV(L->base, checklightudptr(L, ptr));
+  } else {
+    setnilV(L->base);
+  }
+  if (fd != -1) {
+    close(fd);
+  }
+  return 1;
+}
+
+LUA_API int luaJIT_vmprofile_close(lua_State *L, void *ud)
+{
+  munmap(ud, sizeof(VMProfile));
+  return 0;
+}
+
+LUA_API int luaJIT_vmprofile_select(lua_State *L, void *ud)
+{
+  setlightudV(L->base, checklightudptr(L, profile));
+  vmprofile_set_profile(ud);
+  return 1;
+}
+
+LUA_API int luaJIT_vmprofile_start(lua_State *L)
 {
   memset(&state, 0, sizeof(state));
   state.g = G(L);
   start_timer(1);               /* Sample every 1ms */
+  return 0;
 }
 
-LUA_API void luaJIT_vmprofile_stop(lua_State *L)
+LUA_API int luaJIT_vmprofile_stop(lua_State *L)
 {
   stop_timer();
+  return 0;
 }
 
-#endif

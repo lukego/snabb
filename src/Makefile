@@ -25,6 +25,7 @@ PROGRAM = $(shell find program -regex '^[^/]+/[^/]+' -type d -printf '%P ')
 # sort to eliminate potential duplicate of programs.inc
 INCSRC = $(sort $(shell find . -regex '[^\#]*\.inc' -printf '%P ') programs.inc)
 EVTSRC = $(sort $(shell find . -regex '[^\#]*\.events' -printf '%P '))
+YANGSRC= $(shell find . -regex '[^\#]*\.yang' -printf '%P ')
 
 LUAOBJ := $(patsubst %.lua,obj/%_lua.o,$(LUASRC))
 PFLUAOBJ := $(patsubst %.lua,obj/%_lua.o,$(PFLUASRC))
@@ -38,26 +39,27 @@ EXTRAOBJS := obj/jit_tprof.o obj/jit_vmprof.o obj/strict.o
 RMOBJS := $(patsubst %,obj/%,$(RMSRC))
 INCOBJ := $(patsubst %.inc,obj/%_inc.o, $(INCSRC))
 EVTOBJ := $(patsubst %.events,obj/%_events.o, $(EVTSRC))
+YANGOBJ:= $(patsubst %.yang,obj/%_yang.o, $(YANGSRC))
 EXE    := bin/snabb $(patsubst %,bin/%,$(PROGRAM))
 
 # TESTMODS expands to:
 #   core.memory core.lib ...
 # for each module that has a top-level selftest () function.
-TESTMODS = $(shell find . -regex '[^\#]*\.lua' -printf '%P ' | \
+TESTMODS = $(shell find . -regex '[^\#]*\.\(lua\|dasl\)' -printf '%P ' | \
              xargs grep -s -l '^function selftest *[[:punct:]]' | \
-             sed -e 's_\.lua__' -e 's_/_._g')
+             sed -e 's_\.lua__' -e 's_\.dasl__' -e 's_/_._g')
 
 # TESTSCRIPTS expands to:
 #   lib/watchdog/selftest.sh ...
 # for each executable selftext.sh script in src.
 TESTSCRIPTS = $(shell find . -name "selftest.sh" -executable | xargs)
 
-PATH := ../lib/luajit/usr/local/bin:$(PATH)
+PATH := ../lib/luajit/src:$(PATH)
 
-snabb: $(LUAOBJ) $(PFLUAOBJ) $(HOBJ) $(COBJ) $(ARCHOBJ) $(ASMOBJ) $(PFLUAASMOBJ) $(INCOBJ) $(EVTOBJ) $(LUAJIT_A)
+snabb: $(LUAOBJ) $(PFLUAOBJ) $(HOBJ) $(COBJ) $(ARCHOBJ) $(ASMOBJ) $(PFLUAASMOBJ) $(INCOBJ) $(EVTOBJ) $(YANGOBJ) $(LUAJIT_A)
 	$(E) "LINK      $@"
 	$(Q) $(CC) $(DEBUG) -Wl,--no-as-needed -Wl,-E -Werror -Wall -o $@ $^ \
-	    ../lib/luajit/src/libluajit.a \
+	    ../lib/luajit/src/raptorjit.a \
 	    -lrt -lc -ldl -lm -lpthread
 	@echo -n "BINARY    "
 	@ls -sh snabb
@@ -121,12 +123,12 @@ $(OBJDIR) bin testlog $(OBJDIR/doc):
 
 $(LUAOBJ): obj/%_lua.o: %.lua Makefile | $(OBJDIR)
 	$(E) "LUA       $@"
-	$(Q) luajit -bg -n $(subst /,.,$*) $< $@
+	$(Q) raptorjit -bg -n $(subst /,.,$*) $< $@
 
 $(PFLUAOBJ): obj/%_lua.o: ../lib/pflua/src/%.lua Makefile
 	$(E) "LUA       $@"
 	$(Q) mkdir -p $(dir $@)
-	$(Q) luajit -bg -n $(subst /,.,$*) $< $@
+	$(Q) raptorjit -bg -n $(subst /,.,$*) $< $@
 
 $(COBJ): obj/%_c.o: %.c $(CHDR) Makefile | $(OBJDIR)
 	$(E) "C         $@"
@@ -145,22 +147,22 @@ $(HOBJ): obj/%_h.o: %.h Makefile | $(OBJDIR)
 	@(echo -n "module(...,package.seeall); require(\"ffi\").cdef[=============["; \
 	 cat $<; \
 	 echo "]=============]") > $(basename $@).luah
-	$(Q) luajit -bg -n $(subst /,.,$*)_h $(basename $@).luah $@
+	$(Q) raptorjit -bg -n $(subst /,.,$*)_h $(basename $@).luah $@
 
 $(ASMOBJ): obj/%_dasl.o: %.dasl $(CHDR) Makefile | $(OBJDIR)
 	$(E) "ASM       $@"
-	$(Q) luajit dynasm.lua -o $@.gen $<
-	$(Q) luajit -bg -n $(subst /,.,$*) $@.gen $@
+	$(Q) raptorjit dynasm.lua -o $@.gen $<
+	$(Q) raptorjit -bg -n $(subst /,.,$*) $@.gen $@
 
 $(PFLUAASMOBJ): obj/%_dasl.o: ../lib/pflua/src/%.dasl $(CHDR) Makefile | $(OBJDIR)
 	$(E) "ASM       $@"
 	$(Q) mkdir -p $(dir $@)
-	$(Q) luajit dynasm.lua -o $@.gen $<
-	$(Q) luajit -bg -n $(subst /,.,$*) $@.gen $@
+	$(Q) raptorjit dynasm.lua -o $@.gen $<
+	$(Q) raptorjit -bg -n $(subst /,.,$*) $@.gen $@
 
 $(JITOBJS): obj/jit_%.o: ../lib/luajit/src/jit/%.lua $(OBJDIR)
 	$(E) "LUA       $@"
-	$(Q) luajit -bg -n $(patsubst obj/jit_%.o, jit.%, $@) $< $@
+	$(Q) raptorjit -bg -n $(patsubst obj/jit_%.o, jit.%, $@) $< $@
 
 $(RMOBJS): obj/%: %
 	$(E) "MARKDOWN  $@"
@@ -171,7 +173,14 @@ $(INCOBJ): obj/%_inc.o: %.inc Makefile | $(OBJDIR)
 	@(echo -n "return [=============["; \
 	 cat $<; \
 	 echo "]=============]") > $(basename $@).luainc
-	$(Q) luajit -bg -n $(subst /,.,$*)_inc $(basename $@).luainc $@
+	$(Q) raptorjit -bg -n $(subst /,.,$*)_inc $(basename $@).luainc $@
+
+$(YANGOBJ): obj/%_yang.o: %.yang Makefile | $(OBJDIR)
+	$(E) "YANG      $@"
+	@(echo -n "return [=============["; \
+	 cat $<; \
+	 echo "]=============]") > $(basename $@).luayang
+	$(Q) raptorjit -bg -n $(subst /,.,$*)_yang $(basename $@).luayang $@
 
 $(EVTOBJ): obj/%_events.o: %.events Makefile | $(OBJDIR)
 	$(E) "EVENTS    $@"
@@ -189,11 +198,11 @@ FORCE:
 # extra/ third party bits and pieces
 obj/strict.o: extra/strict.lua | $(OBJDIR)
 	$(E) "LUA       $@"
-	$(Q) luajit -bg $< $@
+	$(Q) raptorjit -bg $< $@
 
 obj/jit_tprof.o: extra/tprof.lua | $(OBJDIR)
 	$(E) "LUA       $@"
-	$(Q) luajit -bg -n jit.tprof $< $@
+	$(Q) raptorjit -bg -n jit.tprof $< $@
 
 obj/jit_vmprof.o: extra/vmprof.c | $(OBJDIR)
 	$(E) "C         $@"
@@ -218,7 +227,15 @@ obj/doc/snabb.epub: obj/doc/snabb.markdown
 
 CLEAN = snabb obj bin testlog programs.inc
 
-clean:
+clean_programs:
+	@(for d in program/*/; do \
+		if [ -f "$$d/Makefile" ]; then \
+			echo "CLEAN     $$d"; \
+			make -s -C $$d clean; \
+		fi \
+	  done)
+
+clean: clean_programs
 	$(E) "RM        $(CLEAN)"
 	$(Q)-rm -rf $(CLEAN)
 
@@ -229,5 +246,4 @@ mrproper: clean
 benchmarks:
 	$(Q) (scripts/bench.sh)
 
-.PHONY: clean $(TESTMODS) $(TESTSCRIPTS) benchmarks
-
+.PHONY: clean_programs clean $(TESTMODS) $(TESTSCRIPTS) benchmarks

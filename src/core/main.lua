@@ -8,7 +8,6 @@ package.path = ''
 
 local STP = require("lib.lua.StackTracePlus")
 local ffi = require("ffi")
-local zone = require("jit.zone")
 local lib = require("core.lib")
 local shm = require("core.shm")
 local C   = ffi.C
@@ -41,19 +40,30 @@ _G.developer_debug = lib.getenv("SNABB_DEBUG") ~= nil
 debug_on_error = _G.developer_debug
 
 function main ()
-   zone("startup")
    require "lib.lua.strict"
    -- Warn on unsupported platforms
    if ffi.arch ~= 'x64' or ffi.os ~= 'Linux' then
       error("fatal: "..ffi.os.."/"..ffi.arch.." is not a supported platform\n")
    end
    initialize()
-   local program, args = select_program(parse_command_line())
-   if not lib.have_module(modulename(program)) then
-      print("unsupported program: "..program:gsub("_", "-"))
-      usage(1)
+   if lib.getenv("SNABB_PROGRAM_LUACODE") then
+      -- Run the given Lua code instead of the command-line
+      local expr = lib.getenv("SNABB_PROGRAM_LUACODE")
+      local f = loadstring(expr)
+      if f == nil then
+         error(("Failed to load $SNABB_PROGRAM_LUACODE: %q"):format(expr))
+      else
+         f()
+      end
    else
-      require(modulename(program)).run(args)
+      -- Choose a program based on the command line
+      local program, args = select_program(parse_command_line())
+      if not lib.have_module(modulename(program)) then
+         print("unsupported program: "..program:gsub("_", "-"))
+         usage(1)
+      else
+         require(modulename(program)).run(args)
+      end
    end
 end
 
@@ -142,7 +152,28 @@ end
 
 -- Cleanup after Snabb process.
 function shutdown (pid)
+   -- Parent process performs additional cleanup steps.
+   -- (Parent is the process whose 'group' folder is not a symlink.)
+   local st, err = S.lstat(shm.root.."/"..pid.."/group")
+   local is_parent = st and st.isdir
+   if is_parent then
+      -- simple pcall helper to print error and continue
+      local function safely (f)
+         local ok, err = pcall(f)
+         if not ok then print(err) end
+      end
+      -- Run cleanup hooks
+      safely(function () require("lib.hardware.pci").shutdown(pid) end)
+      safely(function () require("core.memory").shutdown(pid) end)
+   end
+   -- Free shared memory objects
    if not _G.developer_debug and not lib.getenv("SNABB_SHM_KEEP") then
+      -- Try cleaning up symlinks for named apps, if none exist, fail silently.
+      local backlink = shm.root.."/"..pid.."/name"
+      local name_link = S.readlink(backlink)
+      S.unlink(name_link)
+      S.unlink(backlink)
+
       shm.unlink("/"..pid)
    end
 end
