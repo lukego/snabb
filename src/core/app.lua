@@ -498,6 +498,7 @@ function main (options)
    -- Enable auditlog
    if not auditlog_enabled then
       jit.auditlog(shm.path("audit.log"))
+      auditlog_enabled = true
    end
 
    -- Setup vmprofile
