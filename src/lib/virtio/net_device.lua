@@ -113,10 +113,13 @@ function VirtioNetDevice:new(owner, disable_mrg_rxbuf, disable_indirect_desc)
    return o
 end
 
+
 function VirtioNetDevice:poll_vring_receive ()
    -- RX
-   self:receive_packets_from_vm()
-   self:rx_signal_used()
+   if self:ready() then
+      self:receive_packets_from_vm()
+      self:rx_signal_used()
+   end
 end
 
 -- Receive all available packets from the virtual machine.
@@ -185,8 +188,10 @@ end
 
 function VirtioNetDevice:poll_vring_transmit ()
    -- RX
-   self:transmit_packets_to_vm()
-   self:tx_signal_used()
+   if self:ready() then
+      self:transmit_packets_to_vm()
+      self:tx_signal_used()
+   end
 end
 
 -- Receive all available packets from the virtual machine.
